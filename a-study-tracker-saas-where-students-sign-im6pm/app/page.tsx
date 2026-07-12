@@ -11,11 +11,11 @@ export default async function Home() {
   return (
     <div className="min-h-screen bg-white">
       <header className="border-b border-zinc-200">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4">
           <span className="text-lg font-semibold tracking-tight text-zinc-900">Recall</span>
           <Link
             href="/login"
-            className="rounded-lg border border-zinc-200 px-4 py-2 text-sm font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            className="rounded-xl border border-zinc-200 px-4 py-2 text-sm font-semibold text-zinc-700 transition duration-150 hover:bg-zinc-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
           >
             Log in
           </Link>
@@ -33,7 +33,7 @@ export default async function Home() {
         <div className="mt-10 flex items-center justify-center gap-4">
           <Link
             href="/login"
-            className="rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white transition duration-150 hover:bg-indigo-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
+            className="rounded-xl bg-indigo-600 px-6 py-3 text-sm font-semibold text-white transition duration-150 hover:bg-indigo-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600"
           >
             Get started
           </Link>
