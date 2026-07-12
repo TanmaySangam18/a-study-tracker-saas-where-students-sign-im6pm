@@ -1,0 +1,1884 @@
+Warning: Input is not a terminal (fd=0).
+────────────────────────────────────────────────────────────────────────────────
+Update git name with: git config user.name "Your Name"
+Update git email with: git config user.email "you@example.com"
+You can skip this check with --no-gitignore
+Added .aider* to .gitignore
+Creating empty file 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm/a-study-tracker-saas-where-students-sign-im6pm/a
+pp/api/items/route.ts
+Creating empty file 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm/a-study-tracker-saas-where-students-sign-im6pm/a
+pp/login/page.tsx
+Creating empty file 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm/a-study-tracker-saas-where-students-sign-im6pm/a
+pp/dashboard/page.tsx
+Creating empty file 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm/a-study-tracker-saas-where-students-sign-im6pm/a
+pp/api/auth/route.ts
+Aider v0.86.2
+Model: anthropic/claude-sonnet-5 with whole edit format
+Git repo: ../.git with 3 files
+Repo-map: using 4096 tokens, auto refresh
+Added a-study-tracker-saas-where-students-sign-im6pm/app/api/auth/route.ts to 
+the chat.
+Added a-study-tracker-saas-where-students-sign-im6pm/app/api/items/route.ts to 
+the chat.
+Added a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/page.tsx to 
+the chat.
+Added a-study-tracker-saas-where-students-sign-im6pm/app/login/page.tsx to the 
+chat.
+Added a-study-tracker-saas-where-students-sign-im6pm/app/page.tsx to the chat.
+
+
+https://aider.chat/HISTORY.html#release-notes
+Note: in-chat filenames are always relative to the git working dir, not the 
+current working dir.
+Cur working dir: 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm/a-study-tracker-saas-where-students-sign-im6pm
+Git working dir: 
+/home/runner/work/a-study-tracker-saas-where-students-sign-im6pm/a-study-tracker
+-saas-where-students-sign-im6pm
+
+I'll build out the full study-tracker SaaS: a public landing page,              
+email/password auth (Supabase-backed when configured, a signed-cookie session   
+with hashed passwords otherwise), a protected dashboard with weekly stats and a 
+create/list/delete flow for study sessions, and an API that requires auth and   
+scopes every read/write to the current user (RLS-ready when Supabase is         
+configured).                                                                    
+
+Plan:                                                                           
+
+ 1 Add small lib/ modules: config (Supabase env detection), types, in-memory    
+   user store (hashed passwords via Node's built-in crypto.scrypt), signed      
+   session cookie (HMAC via crypto), and a unified getCurrentUser() that works  
+   in either mode.                                                              
+ 2 Rewrite app/api/auth/route.ts — signup/login/logout, Supabase Auth REST calls
+   when configured, otherwise the in-memory store + signed cookie. Fails closed 
+   on bad input (400) and bad credentials (401).                                
+ 3 Rewrite app/api/items/route.ts — GET/POST/DELETE for study sessions, requires
+   auth (401 otherwise), uses Supabase PostgREST with the user's own access     
+   token (so RLS on auth.uid() enforces isolation) or an in-memory Map scoped by
+   userId when unconfigured.                                                    
+ 4 Rewrite app/login/page.tsx — a real signup/login form.                       
+ 5 Rewrite app/dashboard/page.tsx (server component, redirects to /login when   
+   signed out) + new app/dashboard/dashboard-client.tsx (the actual polished UI:
+   weekly bar chart, log-session form, session list with delete,                
+   loading/empty/error states).                                                 
+ 6 Rewrite app/page.tsx — a real marketing landing page (redirects to /dashboard
+   if already signed in).                                                       
+
+Note on Supabase mode: if you set SUPABASE_URL + SUPABASE_ANON_KEY, you need a  
+study_sessions table with RLS enabled and policies keyed on auth.uid() = user_id
+(columns: id uuid default gen_random_uuid() primary key, user_id uuid not null  
+default auth.uid(), subject text, duration_minutes int, studied_at date,        
+created_at timestamptz default now()). No npm packages required — I call        
+Supabase's REST/Auth HTTP APIs directly with fetch, so the build never depends  
+on an SDK that may not be installed.                                            
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/config.ts                    
+
+                                                                                
+export const SUPABASE_URL = process.env.SUPABASE_URL;                           
+                                                                                
+export const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;                 
+                                                                                
+                                                                                
+                                                                                
+export const useSupabase = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);          
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/types.ts                     
+
+                                                                                
+export type StudySession = {                                                    
+                                                                                
+  id: string;                                                                   
+                                                                                
+  userId: string;                                                               
+                                                                                
+  subject: string;                                                              
+                                                                                
+  durationMinutes: number;                                                      
+                                                                                
+  studiedAt: string; // YYYY-MM-DD                                              
+                                                                                
+  createdAt: string;                                                            
+                                                                                
+};                                                                              
+                                                                                
+                                                                                
+                                                                                
+export type SessionUser = {                                                     
+                                                                                
+  id: string;                                                                   
+                                                                                
+  email: string;                                                                
+                                                                                
+  /** Present only in Supabase mode; used as the Bearer token for RLS-scoped    
+REST calls. */                                                                  
+                                                                                
+  accessToken?: string;                                                         
+                                                                                
+};                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/user-store.ts                
+
+                                                                                
+import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from "crypto";  
+                                                                                
+                                                                                
+                                                                                
+export type MemoryUser = {                                                      
+                                                                                
+  id: string;                                                                   
+                                                                                
+  email: string;                                                                
+                                                                                
+  passwordHash: string;                                                         
+                                                                                
+  salt: string;                                                                 
+                                                                                
+};                                                                              
+                                                                                
+                                                                                
+                                                                                
+type Global = typeof globalThis & {                                             
+                                                                                
+  __studyTrackerUsers?: Map<string, MemoryUser>;                                
+                                                                                
+};                                                                              
+                                                                                
+                                                                                
+                                                                                
+const g = globalThis as Global;                                                 
+                                                                                
+const users = g.__studyTrackerUsers ?? (g.__studyTrackerUsers = new Map());     
+                                                                                
+                                                                                
+                                                                                
+export function hashPassword(password: string): { hash: string; salt: string } {
+                                                                                
+  const salt = randomBytes(16).toString("hex");                                 
+                                                                                
+  const hash = scryptSync(password, salt, 64).toString("hex");                  
+                                                                                
+  return { hash, salt };                                                        
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function verifyPassword(password: string, hash: string, salt: string):   
+boolean {                                                                       
+                                                                                
+  const attempt = scryptSync(password, salt, 64);                               
+                                                                                
+  const original = Buffer.from(hash, "hex");                                    
+                                                                                
+  if (attempt.length !== original.length) return false;                         
+                                                                                
+  return timingSafeEqual(attempt, original);                                    
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function createUser(email: string, password: string): MemoryUser {       
+                                                                                
+  const { hash, salt } = hashPassword(password);                                
+                                                                                
+  const user: MemoryUser = {                                                    
+                                                                                
+    id: randomUUID(),                                                           
+                                                                                
+    email: email.toLowerCase(),                                                 
+                                                                                
+    passwordHash: hash,                                                         
+                                                                                
+    salt,                                                                       
+                                                                                
+  };                                                                            
+                                                                                
+  users.set(user.email, user);                                                  
+                                                                                
+  return user;                                                                  
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function findUserByEmail(email: string): MemoryUser | undefined {        
+                                                                                
+  return users.get(email.toLowerCase());                                        
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function findUserById(id: string): MemoryUser | undefined {              
+                                                                                
+  for (const user of users.values()) {                                          
+                                                                                
+    if (user.id === id) return user;                                            
+                                                                                
+  }                                                                             
+                                                                                
+  return undefined;                                                             
+                                                                                
+}                                                                               
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/auth-cookie.ts               
+
+                                                                                
+import { createHmac } from "crypto";                                            
+                                                                                
+                                                                                
+                                                                                
+export const SESSION_COOKIE = "study_tracker_session";                          
+                                                                                
+export const MAX_AGE_SECONDS = 60 * 60 * 24 * 30; // 30 days                    
+                                                                                
+                                                                                
+                                                                                
+const SECRET = process.env.SESSION_SECRET ??                                    
+"dev-only-secret-set-SESSION_SECRET-in-production";                             
+                                                                                
+                                                                                
+                                                                                
+function sign(value: string): string {                                          
+                                                                                
+  return createHmac("sha256", SECRET).update(value).digest("hex");              
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function createSessionToken(userId: string): string {                    
+                                                                                
+  const expires = Date.now() + MAX_AGE_SECONDS * 1000;                          
+                                                                                
+  const payload = `${userId}.${expires}`;                                       
+                                                                                
+  const signature = sign(payload);                                              
+                                                                                
+  return Buffer.from(`${payload}.${signature}`).toString("base64url");          
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+export function verifySessionToken(token: string): { userId: string } | null {  
+                                                                                
+  try {                                                                         
+                                                                                
+    const decoded = Buffer.from(token, "base64url").toString("utf8");           
+                                                                                
+    const parts = decoded.split(".");                                           
+                                                                                
+    if (parts.length !== 3) return null;                                        
+                                                                                
+    const [userId, expiresStr, signature] = parts;                              
+                                                                                
+    if (sign(`${userId}.${expiresStr}`) !== signature) return null;             
+                                                                                
+    const expires = Number(expiresStr);                                         
+                                                                                
+    if (Number.isNaN(expires) || Date.now() > expires) return null;             
+                                                                                
+    return { userId };                                                          
+                                                                                
+  } catch {                                                                     
+                                                                                
+    return null;                                                                
+                                                                                
+  }                                                                             
+                                                                                
+}                                                                               
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/session.ts                   
+
+                                                                                
+import { cookies } from "next/headers";                                         
+                                                                                
+import { SUPABASE_URL, SUPABASE_ANON_KEY, useSupabase } from "./config";        
+                                                                                
+import { SESSION_COOKIE, verifySessionToken } from "./auth-cookie";             
+                                                                                
+import { findUserById } from "./user-store";                                    
+                                                                                
+import type { SessionUser } from "./types";                                     
+                                                                                
+                                                                                
+                                                                                
+export const SUPABASE_COOKIE = "sb_access_token";                               
+                                                                                
+                                                                                
+                                                                                
+export async function getCurrentUser(): Promise<SessionUser | null> {           
+                                                                                
+  const cookieStore = await cookies();                                          
+                                                                                
+                                                                                
+                                                                                
+  if (useSupabase) {                                                            
+                                                                                
+    const token = cookieStore.get(SUPABASE_COOKIE)?.value;                      
+                                                                                
+    if (!token) return null;                                                    
+                                                                                
+    try {                                                                       
+                                                                                
+      const res = await fetch(`${SUPABASE_URL}/auth/v1/user`, {                 
+                                                                                
+        headers: {                                                              
+                                                                                
+          apikey: SUPABASE_ANON_KEY as string,                                  
+                                                                                
+          Authorization: `Bearer ${token}`,                                     
+                                                                                
+        },                                                                      
+                                                                                
+        cache: "no-store",                                                      
+                                                                                
+      });                                                                       
+                                                                                
+      if (!res.ok) return null;                                                 
+                                                                                
+      const data = await res.json();                                            
+                                                                                
+      if (typeof data?.id !== "string" || typeof data?.email !== "string")      
+return null;                                                                    
+                                                                                
+      return { id: data.id, email: data.email, accessToken: token };            
+                                                                                
+    } catch {                                                                   
+                                                                                
+      return null;                                                              
+                                                                                
+    }                                                                           
+                                                                                
+  }                                                                             
+                                                                                
+                                                                                
+                                                                                
+  const token = cookieStore.get(SESSION_COOKIE)?.value;                         
+                                                                                
+  if (!token) return null;                                                      
+                                                                                
+  const verified = verifySessionToken(token);                                   
+                                                                                
+  if (!verified) return null;                                                   
+                                                                                
+  const user = findUserById(verified.userId);                                   
+                                                                                
+  if (!user) return null;                                                       
+                                                                                
+  return { id: user.id, email: user.email };                                    
+                                                                                
+}                                                                               
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/api/auth/route.ts            
+
+                                                                                
+@@ -0,0 +1,139 @@                                                               
++import { NextRequest, NextResponse } from "next/server";                       
++import { SUPABASE_URL, SUPABASE_ANON_KEY, useSupabase } from                   
+"../../../lib/config";                                                          
++import { createUser, findUserByEmail, verifyPassword } from                    
+"../../../lib/user-store";                                                      
++import { createSessionToken, SESSION_COOKIE, MAX_AGE_SECONDS } from            
+"../../../lib/auth-cookie";                                                     
++import { getCurrentUser, SUPABASE_COOKIE } from "../../../lib/session";        
++                                                                               
++const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;                                 
++                                                                               
++function validateCredentials(                                                  
++  body: unknown                                                                
++): { ok: true; email: string; password: string } | { ok: false; error: string }
+{                                                                               
++  if (typeof body !== "object" || body === null) {                             
++    return { ok: false, error: "Invalid request body." };                      
++  }                                                                            
++  const { email, password } = body as { email?: unknown; password?: unknown }; 
++  if (typeof email !== "string" || !EMAIL_RE.test(email)) {                    
++    return { ok: false, error: "Enter a valid email address." };               
++  }                                                                            
++  if (typeof password !== "string" || password.length < 8) {                   
++    return { ok: false, error: "Password must be at least 8 characters." };    
++  }                                                                            
++  return { ok: true, email, password };                                        
++}                                                                              
++                                                                               
++export async function GET() {                                                  
++  const user = await getCurrentUser();                                         
++  return NextResponse.json({ user: user ? { id: user.id, email: user.email } : 
+null });                                                                        
++}                                                                              
++                                                                               
++export async function POST(request: NextRequest) {                             
++  let body: unknown;                                                           
++  try {                                                                        
++    body = await request.json();                                               
++  } catch {                                                                    
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }                                                                            
++                                                                               
++  const action =                                                               
++    typeof body === "object" && body !== null ? (body as { action?: unknown    
+}).action : undefined;                                                          
++  if (action !== "signup" && action !== "login") {                             
++    return NextResponse.json({ error: "action must be 'signup' or 'login'." }, 
+{ status: 400 });                                                               
++  }                                                                            
++                                                                               
++  const validated = validateCredentials(body);                                 
++  if (!validated.ok) {                                                         
++    return NextResponse.json({ error: validated.error }, { status: 400 });     
++  }                                                                            
++  const { email, password } = validated;                                       
++                                                                               
++  if (useSupabase) {                                                           
++    const endpoint =                                                           
++      action === "signup"                                                      
++        ? `${SUPABASE_URL}/auth/v1/signup`                                     
++        : `${SUPABASE_URL}/auth/v1/token?grant_type=password`;                 
++                                                                               
++    const supabaseRes = await fetch(endpoint, {                                
++      method: "POST",                                                          
++      headers: {                                                               
++        "Content-Type": "application/json",                                    
++        apikey: SUPABASE_ANON_KEY as string,                                   
++      },                                                                       
++      body: JSON.stringify({ email, password }),                               
++    });                                                                        
++                                                                               
++    const data = await supabaseRes.json();                                     
++                                                                               
++    if (!supabaseRes.ok) {                                                     
++      const message =                                                          
++        typeof data?.error_description === "string"                            
++          ? data.error_description                                             
++          : typeof data?.msg === "string"                                      
++          ? data.msg                                                           
++          : "Authentication failed.";                                          
++      const status = supabaseRes.status >= 400 && supabaseRes.status < 500 ?   
+supabaseRes.status : 400;                                                       
++      return NextResponse.json({ error: message }, { status });                
++    }                                                                          
++                                                                               
++    if (!data.access_token) {                                                  
++      return NextResponse.json({                                               
++        user: null,                                                            
++        message: "Account created. Check your inbox to confirm your email, then
+log in.",                                                                       
++      });                                                                      
++    }                                                                          
++                                                                               
++    const response = NextResponse.json({                                       
++      user: { id: data.user?.id, email: data.user?.email ?? email },           
++    });                                                                        
++    response.cookies.set(SUPABASE_COOKIE, data.access_token, {                 
++      httpOnly: true,                                                          
++      secure: process.env.NODE_ENV === "production",                           
++      sameSite: "lax",                                                         
++      path: "/",                                                               
++      maxAge: typeof data.expires_in === "number" ? data.expires_in :          
+MAX_AGE_SECONDS,                                                                
++    });                                                                        
++    return response;                                                           
++  }                                                                            
++                                                                               
++  if (action === "signup") {                                                   
++    if (findUserByEmail(email)) {                                              
++      return NextResponse.json(                                                
++        { error: "An account with that email already exists." },               
++        { status: 400 }                                                        
++      );                                                                       
++    }                                                                          
++    const user = createUser(email, password);                                  
++    const token = createSessionToken(user.id);                                 
++    const response = NextResponse.json({ user: { id: user.id, email: user.email
+} });                                                                           
++    response.cookies.set(SESSION_COOKIE, token, {                              
++      httpOnly: true,                                                          
++      secure: process.env.NODE_ENV === "production",                           
++      sameSite: "lax",                                                         
++      path: "/",                                                               
++      maxAge: MAX_AGE_SECONDS,                                                 
++    });                                                                        
++    return response;                                                           
++  }                                                                            
++                                                                               
++  const user = findUserByEmail(email);                                         
++  if (!user || !verifyPassword(password, user.passwordHash, user.salt)) {      
++    return NextResponse.json({ error: "Incorrect email or password." }, {      
+status: 401 });                                                                 
++  }                                                                            
++  const token = createSessionToken(user.id);                                   
++  const response = NextResponse.json({ user: { id: user.id, email: user.email }
+});                                                                             
++  response.cookies.set(SESSION_COOKIE, token, {                                
++    httpOnly: true,                                                            
++    secure: process.env.NODE_ENV === "production",                             
++    sameSite: "lax",                                                           
++    path: "/",                                                                 
++    maxAge: MAX_AGE_SECONDS,                                                   
++  });                                                                          
++  return response;                                                             
++}                                                                              
++                                                                               
++export async function DELETE() {                                               
++  const response = NextResponse.json({ ok: true });                            
++  response.cookies.delete(SESSION_COOKIE);                                     
++  response.cookies.delete(SUPABASE_COOKIE);                                    
++  return response;                                                             
++}                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/api/items/route.ts           
+
+                                                                                
+@@ -0,0 +1,208 @@                                                               
++// Study sessions API — requires auth, scoped to the signed-in user.           
++//                                                                             
++// If SUPABASE_URL + SUPABASE_ANON_KEY are set, rows persist in Supabase via   
+PostgREST,                                                                      
++// authenticated as the current user (their access token, not a service-role   
+key) so                                                                         
++// Row Level Security enforces isolation. Expected schema:                     
++//                                                                             
++//   create table study_sessions (                                             
++//     id uuid primary key default gen_random_uuid(),                          
++//     user_id uuid not null default auth.uid() references auth.users(id),     
++//     subject text not null,                                                  
++//     duration_minutes int not null,                                          
++//     studied_at date not null,                                               
++//     created_at timestamptz not null default now()                           
++//   );                                                                        
++//   alter table study_sessions enable row level security;                     
++//   create policy "select own" on study_sessions for select using (auth.uid() 
+= user_id);                                                                     
++//   create policy "insert own" on study_sessions for insert with check        
+(auth.uid() = user_id);                                                         
++//   create policy "delete own" on study_sessions for delete using (auth.uid() 
+= user_id);                                                                     
++//                                                                             
++// Otherwise, an in-memory store keeps it running with zero config (not durable
+across                                                                          
++// serverless cold starts — good enough for a local/demo run).                 
++                                                                               
++import { NextRequest, NextResponse } from "next/server";                       
++import { randomUUID } from "crypto";                                           
++import { SUPABASE_URL, SUPABASE_ANON_KEY, useSupabase } from                   
+"../../../lib/config";                                                          
++import { getCurrentUser } from "../../../lib/session";                         
++import type { StudySession } from "../../../lib/types";                        
++                                                                               
++type Global = typeof globalThis & {                                            
++  __studyTrackerItems?: Map<string, StudySession>;                             
++};                                                                             
++                                                                               
++const g = globalThis as Global;                                                
++const memoryItems = g.__studyTrackerItems ?? (g.__studyTrackerItems = new      
+Map());                                                                         
++                                                                               
++const MAX_SUBJECT_LENGTH = 80;                                                 
++                                                                               
++function isValidDate(value: string): boolean {                                 
++  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(value));
++}                                                                              
++                                                                               
++function validatePayload(                                                      
++  body: unknown                                                                
++):                                                                             
++  | { ok: true; subject: string; durationMinutes: number; studiedAt: string }  
++  | { ok: false; error: string } {                                             
++  if (typeof body !== "object" || body === null) {                             
++    return { ok: false, error: "Invalid request body." };                      
++  }                                                                            
++  const { subject, durationMinutes, studiedAt } = body as {                    
++    subject?: unknown;                                                         
++    durationMinutes?: unknown;                                                 
++    studiedAt?: unknown;                                                       
++  };                                                                           
++                                                                               
++  if (typeof subject !== "string" || subject.trim().length === 0 ||            
+subject.length > MAX_SUBJECT_LENGTH) {                                          
++    return { ok: false, error: `Subject is required (max ${MAX_SUBJECT_LENGTH} 
+characters).` };                                                                
++  }                                                                            
++  if (                                                                         
++    typeof durationMinutes !== "number" ||                                     
++    !Number.isFinite(durationMinutes) ||                                       
++    durationMinutes <= 0 ||                                                    
++    durationMinutes > 1440                                                     
++  ) {                                                                          
++    return { ok: false, error: "Duration must be a number of minutes between 1 
+and 1440." };                                                                   
++  }                                                                            
++  if (typeof studiedAt !== "string" || !isValidDate(studiedAt)) {              
++    return { ok: false, error: "studiedAt must be a valid date (YYYY-MM-DD)."  
+};                                                                              
++  }                                                                            
++                                                                               
++  return { ok: true, subject: subject.trim(), durationMinutes, studiedAt };    
++}                                                                              
++                                                                               
++export async function GET() {                                                  
++  const user = await getCurrentUser();                                         
++  if (!user) {                                                                 
++    return NextResponse.json({ error: "Not signed in." }, { status: 401 });    
++  }                                                                            
++                                                                               
++  if (useSupabase) {                                                           
++    const res = await fetch(                                                   
++                                                                               
+`${SUPABASE_URL}/rest/v1/study_sessions?select=*&order=studied_at.desc,created_a
+t.desc`,                                                                        
++      {                                                                        
++        headers: {                                                             
++          apikey: SUPABASE_ANON_KEY as string,                                 
++          Authorization: `Bearer ${user.accessToken}`,                         
++        },                                                                     
++        cache: "no-store",                                                     
++      }                                                                        
++    );                                                                         
++    if (!res.ok) {                                                             
++      return NextResponse.json({ error: "Could not load study sessions." }, {  
+status: 502 });                                                                 
++    }                                                                          
++    const rows = (await res.json()) as Array<Record<string, unknown>>;         
++    const sessions: StudySession[] = rows.map((row) => ({                      
++      id: String(row.id),                                                      
++      userId: String(row.user_id),                                             
++      subject: String(row.subject),                                            
++      durationMinutes: Number(row.duration_minutes),                           
++      studiedAt: String(row.studied_at),                                       
++      createdAt: String(row.created_at),                                       
++    }));                                                                       
++    return NextResponse.json({ sessions });                                    
++  }                                                                            
++                                                                               
++  const sessions = Array.from(memoryItems.values())                            
++    .filter((item) => item.userId === user.id)                                 
++    .sort((a, b) => (a.studiedAt < b.studiedAt ? 1 : -1));                     
++  return NextResponse.json({ sessions });                                      
++}                                                                              
++                                                                               
++export async function POST(request: NextRequest) {                             
++  const user = await getCurrentUser();                                         
++  if (!user) {                                                                 
++    return NextResponse.json({ error: "Not signed in." }, { status: 401 });    
++  }                                                                            
++                                                                               
++  let body: unknown;                                                           
++  try {                                                                        
++    body = await request.json();                                               
++  } catch {                                                                    
++    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
++  }                                                                            
++                                                                               
++  const validated = validatePayload(body);                                     
++  if (!validated.ok) {                                                         
++    return NextResponse.json({ error: validated.error }, { status: 400 });     
++  }                                                                            
++                                                                               
++  if (useSupabase) {                                                           
++    const res = await fetch(`${SUPABASE_URL}/rest/v1/study_sessions`, {        
++      method: "POST",                                                          
++      headers: {                                                               
++        apikey: SUPABASE_ANON_KEY as string,                                   
++        Authorization: `Bearer ${user.accessToken}`,                           
++        "Content-Type": "application/json",                                    
++        Prefer: "return=representation",                                       
++      },                                                                       
++      body: JSON.stringify({                                                   
++        subject: validated.subject,                                            
++        duration_minutes: validated.durationMinutes,                           
++        studied_at: validated.studiedAt,                                       
++        user_id: user.id,                                                      
++      }),                                                                      
++    });                                                                        
++    if (!res.ok) {                                                             
++      return NextResponse.json({ error: "Could not save the study session." }, 
+{ status: 502 });                                                               
++    }                                                                          
++    const rows = (await res.json()) as Array<Record<string, unknown>>;         
++    const row = rows[0];                                                       
++    const session: StudySession = {                                            
++      id: String(row.id),                                                      
++      userId: String(row.user_id),                                             
++      subject: String(row.subject),                                            
++      durationMinutes: Number(row.duration_minutes),                           
++      studiedAt: String(row.studied_at),                                       
++      createdAt: String(row.created_at),                                       
++    };                                                                         
++    return NextResponse.json({ session }, { status: 201 });                    
++  }                                                                            
++                                                                               
++  const session: StudySession = {                                              
++    id: randomUUID(),                                                          
++    userId: user.id,                                                           
++    subject: validated.subject,                                                
++    durationMinutes: validated.durationMinutes,                                
++    studiedAt: validated.studiedAt,                                            
++    createdAt: new Date().toISOString(),                                       
++  };                                                                           
++  memoryItems.set(session.id, session);                                        
++  return NextResponse.json({ session }, { status: 201 });                      
++}                                                                              
++                                                                               
++export async function DELETE(request: NextRequest) {                           
++  const user = await getCurrentUser();                                         
++  if (!user) {                                                                 
++    return NextResponse.json({ error: "Not signed in." }, { status: 401 });    
++  }                                                                            
++                                                                               
++  const id = request.nextUrl.searchParams.get("id");                           
++  if (!id) {                                                                   
++    return NextResponse.json({ error: "Missing id." }, { status: 400 });       
++  }                                                                            
++                                                                               
++  if (useSupabase) {                                                           
++    const res = await fetch(                                                   
++      `${SUPABASE_URL}/rest/v1/study_sessions?id=eq.${encodeURIComponent(id)}`,
++      {                                                                        
++        method: "DELETE",                                                      
++        headers: {                                                             
++          apikey: SUPABASE_ANON_KEY as string,                                 
++          Authorization: `Bearer ${user.accessToken}`,                         
++        },                                                                     
++      }                                                                        
++    );                                                                         
++    if (!res.ok) {                                                             
++      return NextResponse.json({ error: "Could not delete the study session."  
+}, { status: 502 });                                                            
++    }                                                                          
++    return NextResponse.json({ ok: true });                                    
++  }                                                                            
++                                                                               
++  const existing = memoryItems.get(id);                                        
++  if (!existing || existing.userId !== user.id) {                              
++    return NextResponse.json({ error: "Not found." }, { status: 404 });        
++  }                                                                            
++  memoryItems.delete(id);                                                      
++  return NextResponse.json({ ok: true });                                      
++}                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/login/page.tsx               
+
+                                                                                
+@@ -0,0 +1,127 @@                                                               
++"use client";                                                                  
++                                                                               
++import { useState, type FormEvent } from "react";                              
++import { useRouter } from "next/navigation";                                   
++import Link from "next/link";                                                  
++                                                                               
++type Mode = "login" | "signup";                                                
++                                                                               
++export default function LoginPage() {                                          
++  const router = useRouter();                                                  
++  const [mode, setMode] = useState<Mode>("login");                             
++  const [email, setEmail] = useState("");                                      
++  const [password, setPassword] = useState("");                                
++  const [error, setError] = useState<string | null>(null);                     
++  const [info, setInfo] = useState<string | null>(null);                       
++  const [submitting, setSubmitting] = useState(false);                         
++                                                                               
++  async function handleSubmit(e: FormEvent) {                                  
++    e.preventDefault();                                                        
++    setError(null);                                                            
++    setInfo(null);                                                             
++    setSubmitting(true);                                                       
++    try {                                                                      
++      const res = await fetch("/api/auth", {                                   
++        method: "POST",                                                        
++        headers: { "Content-Type": "application/json" },                       
++        body: JSON.stringify({ action: mode, email, password }),               
++      });                                                                      
++      const data = await res.json();                                           
++      if (!res.ok) {                                                           
++        setError(typeof data.error === "string" ? data.error : "Something went 
+wrong.");                                                                       
++        return;                                                                
++      }                                                                        
++      if (!data.user) {                                                        
++        setInfo(typeof data.message === "string" ? data.message : "Check your  
+email to continue.");                                                           
++        return;                                                                
++      }                                                                        
++      router.replace("/dashboard");                                            
++      router.refresh();                                                        
++    } catch {                                                                  
++      setError("Something went wrong. Check your connection and try again.");  
++    } finally {                                                                
++      setSubmitting(false);                                                    
++    }                                                                          
++  }                                                                            
++                                                                               
++  return (                                                                     
++    <div className="flex min-h-screen items-center justify-center bg-zinc-50   
+px-6 py-16">                                                                    
++      <div className="w-full max-w-sm">                                        
++        <div className="mb-8 text-center">                                     
++          <Link href="/" className="text-lg font-semibold tracking-tight       
+text-zinc-900">                                                                 
++            Recall                                                             
++          </Link>                                                              
++          <h1 className="mt-6 text-2xl font-semibold tracking-tight            
+text-zinc-900">                                                                 
++            {mode === "login" ? "Welcome back" : "Create your account"}        
++          </h1>                                                                
++          <p className="mt-2 text-sm leading-6 text-zinc-500">                 
++            {mode === "login"                                                  
++              ? "Log in to see your weekly study progress."                    
++              : "Start tracking your study sessions in minutes."}              
++          </p>                                                                 
++        </div>                                                                 
++                                                                               
++        <div className="rounded-xl border border-zinc-200 bg-white p-6         
+shadow-sm">                                                                     
++          <form onSubmit={handleSubmit} className="space-y-4">                 
++            <div>                                                              
++              <label htmlFor="email" className="mb-1.5 block text-sm           
+font-medium text-zinc-700">                                                     
++                Email                                                          
++              </label>                                                         
++              <input                                                           
++                id="email"                                                     
++                type="email"                                                   
++                required                                                       
++                autoComplete="email"                                           
++                value={email}                                                  
++                onChange={(e) => setEmail(e.target.value)}                     
++                className="w-full rounded-lg border border-zinc-200 px-3 py-2  
+text-sm text-zinc-900 transition duration-150 focus-visible:outline             
+focus-visible:outline-2 focus-visible:outline-offset-2                          
+focus-visible:outline-indigo-600"                                               
++              />                                                               
++            </div>                                                             
++            <div>                                                              
++              <label htmlFor="password" className="mb-1.5 block text-sm        
+font-medium text-zinc-700">                                                     
++                Password                                                       
++              </label>                                                         
++              <input                                                           
++                id="password"                                                  
++                type="password"                                                
++                required                                                       
++                minLength={8}                                                  
++                autoComplete={mode === "login" ? "current-password" :          
+"new-password"}                                                                 
++                value={password}                                               
++                onChange={(e) => setPassword(e.target.value)}                  
++                className="w-full rounded-lg border border-zinc-200 px-3 py-2  
+text-sm text-zinc-900 transition duration-150 focus-visible:outline             
+focus-visible:outline-2 focus-visible:outline-offset-2                          
+focus-visible:outline-indigo-600"                                               
++              />                                                               
++              <p className="mt-1.5 text-xs text-zinc-400">At least 8           
+characters.</p>                                                                 
++            </div>                                                             
++                                                                               
++            {error ? <p className="text-sm text-red-600">{error}</p> : null}   
++            {info ? <p className="text-sm text-emerald-600">{info}</p> : null} 
++                                                                               
++            <button                                                            
++              type="submit"                                                    
++              disabled={submitting}                                            
++              className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm     
+font-semibold text-white transition duration-150 hover:bg-indigo-700            
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600 disabled:cursor-not-allowed                    
+disabled:opacity-60"                                                            
++            >                                                                  
++              {submitting ? "Please wait…" : mode === "login" ? "Log in" :     
+"Sign up"}                                                                      
++            </button>                                                          
++          </form>                                                              
++        </div>                                                                 
++                                                                               
++        <p className="mt-6 text-center text-sm text-zinc-500">                 
++          {mode === "login" ? "New to Recall?" : "Already have an account?"}{" 
+"}                                                                              
++          <button                                                              
++            type="button"                                                      
++            onClick={() => {                                                   
++              setMode(mode === "login" ? "signup" : "login");                  
++              setError(null);                                                  
++              setInfo(null);                                                   
++            }}                                                                 
++            className="font-medium text-indigo-600 transition duration-150     
+hover:text-indigo-700 focus-visible:outline focus-visible:outline-2             
+focus-visible:outline-offset-2 focus-visible:outline-indigo-600"                
++          >                                                                    
++            {mode === "login" ? "Create one" : "Log in"}                       
++          </button>                                                            
++        </p>                                                                   
++      </div>                                                                   
++    </div>                                                                     
++  );                                                                           
++}                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/page.tsx           
+
+                                                                                
+@@ -0,0 +1,12 @@                                                                
++import { redirect } from "next/navigation";                                    
++import { getCurrentUser } from "../../lib/session";                            
++import DashboardClient from "./dashboard-client";                              
++                                                                               
++export default async function DashboardPage() {                                
++  const user = await getCurrentUser();                                         
++  if (!user) {                                                                 
++    redirect("/login");                                                        
++  }                                                                            
++                                                                               
++  return <DashboardClient email={user.email} />;                               
++}                                                                              
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/dashboard-client.ts
+x                                                                               
+
+                                                                                
+"use client";                                                                   
+                                                                                
+                                                                                
+                                                                                
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from       
+"react";                                                                        
+                                                                                
+import { useRouter } from "next/navigation";                                    
+                                                                                
+import type { StudySession } from "../../lib/types";                            
+                                                                                
+                                                                                
+                                                                                
+type FormState = {                                                              
+                                                                                
+  subject: string;                                                              
+                                                                                
+  durationMinutes: string;                                                      
+                                                                                
+  studiedAt: string;                                                            
+                                                                                
+};                                                                              
+                                                                                
+                                                                                
+                                                                                
+function todayISO(): string {                                                   
+                                                                                
+  return new Date().toISOString().slice(0, 10);                                 
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+function startOfWeek(date: Date): Date {                                        
+                                                                                
+  const d = new Date(date);                                                     
+                                                                                
+  const day = d.getDay(); // 0 = Sunday                                         
+                                                                                
+  const diff = day === 0 ? -6 : 1 - day; // move back to Monday                 
+                                                                                
+  d.setDate(d.getDate() + diff);                                                
+                                                                                
+  d.setHours(0, 0, 0, 0);                                                       
+                                                                                
+  return d;                                                                     
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+function formatMinutes(total: number): string {                                 
+                                                                                
+  const hours = Math.floor(total / 60);                                         
+                                                                                
+  const minutes = total % 60;                                                   
+                                                                                
+  if (hours === 0) return `${minutes}m`;                                        
+                                                                                
+  if (minutes === 0) return `${hours}h`;                                        
+                                                                                
+  return `${hours}h ${minutes}m`;                                               
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+function formatDay(iso: string): string {                                       
+                                                                                
+  const date = new Date(`${iso}T00:00:00`);                                     
+                                                                                
+  return date.toLocaleDateString(undefined, { weekday: "short", month: "short", 
+day: "numeric" });                                                              
+                                                                                
+}                                                                               
+                                                                                
+                                                                                
+                                                                                
+const emptyForm: FormState = { subject: "", durationMinutes: "", studiedAt:     
+todayISO() };                                                                   
+                                                                                
+                                                                                
+                                                                                
+export default function DashboardClient({ email }: { email: string }) {         
+                                                                                
+  const router = useRouter();                                                   
+                                                                                
+  const [sessions, setSessions] = useState<StudySession[]>([]);                 
+                                                                                
+  const [status, setStatus] = useState<"loading" | "ready" |                    
+"error">("loading");                                                            
+                                                                                
+  const [form, setForm] = useState<FormState>(emptyForm);                       
+                                                                                
+  const [submitting, setSubmitting] = useState(false);                          
+                                                                                
+  const [formError, setFormError] = useState<string | null>(null);              
+                                                                                
+  const [deletingId, setDeletingId] = useState<string | null>(null);            
+                                                                                
+                                                                                
+                                                                                
+  const loadSessions = useCallback(async () => {                                
+                                                                                
+    setStatus("loading");                                                       
+                                                                                
+    try {                                                                       
+                                                                                
+      const res = await fetch("/api/items", { cache: "no-store" });             
+                                                                                
+      if (res.status === 401) {                                                 
+                                                                                
+        router.replace("/login");                                               
+                                                                                
+        return;                                                                 
+                                                                                
+      }                                                                         
+                                                                                
+      if (!res.ok) {                                                            
+                                                                                
+        setStatus("error");                                                     
+                                                                                
+        return;                                                                 
+                                                                                
+      }                                                                         
+                                                                                
+      const data = await res.json();                                            
+                                                                                
+      setSessions(Array.isArray(data.sessions) ? data.sessions : []);           
+                                                                                
+      setStatus("ready");                                                       
+                                                                                
+    } catch {                                                                   
+                                                                                
+      setStatus("error");                                                       
+                                                                                
+    }                                                                           
+                                                                                
+  }, [router]);                                                                 
+                                                                                
+                                                                                
+                                                                                
+  useEffect(() => {                                                             
+                                                                                
+    loadSessions();                                                             
+                                                                                
+  }, [loadSessions]);                                                           
+                                                                                
+                                                                                
+                                                                                
+  const weekStats = useMemo(() => {                                             
+                                                                                
+    const weekStart = startOfWeek(new Date());                                  
+                                                                                
+    const inWeek = sessions.filter((s) => new Date(`${s.studiedAt}T00:00:00`) >=
+weekStart);                                                                     
+                                                                                
+    const totalMinutes = inWeek.reduce((sum, s) => sum + s.durationMinutes, 0); 
+                                                                                
+                                                                                
+                                                                                
+    const days: { iso: string; label: string; minutes: number }[] = [];         
+                                                                                
+    for (let i = 0; i < 7; i += 1) {                                            
+                                                                                
+      const d = new Date(weekStart);                                            
+                                                                                
+      d.setDate(d.getDate() + i);                                               
+                                                                                
+      const iso = d.toISOString().slice(0, 10);                                 
+                                                                                
+      const minutes = inWeek                                                    
+                                                                                
+        .filter((s) => s.studiedAt === iso)                                     
+                                                                                
+        .reduce((sum, s) => sum + s.durationMinutes, 0);                        
+                                                                                
+      days.push({ iso, label: d.toLocaleDateString(undefined, { weekday: "short"
+}), minutes });                                                                 
+                                                                                
+    }                                                                           
+                                                                                
+                                                                                
+                                                                                
+    return { totalMinutes, sessionCount: inWeek.length, days };                 
+                                                                                
+  }, [sessions]);                                                               
+                                                                                
+                                                                                
+                                                                                
+  const maxDayMinutes = Math.max(1, ...weekStats.days.map((d) => d.minutes));   
+                                                                                
+                                                                                
+                                                                                
+  async function handleSubmit(e: FormEvent) {                                   
+                                                                                
+    e.preventDefault();                                                         
+                                                                                
+    setFormError(null);                                                         
+                                                                                
+                                                                                
+                                                                                
+    const trimmedSubject = form.subject.trim();                                 
+                                                                                
+    const minutes = Number(form.durationMinutes);                               
+                                                                                
+                                                                                
+                                                                                
+    if (!trimmedSubject) {                                                      
+                                                                                
+      setFormError('Give this session a subject, like "Organic Chemistry".');   
+                                                                                
+      return;                                                                   
+                                                                                
+    }                                                                           
+                                                                                
+    if (!Number.isFinite(minutes) || minutes <= 0) {                            
+                                                                                
+      setFormError("Duration must be a positive number of minutes.");           
+                                                                                
+      return;                                                                   
+                                                                                
+    }                                                                           
+                                                                                
+    if (!form.studiedAt) {                                                      
+                                                                                
+      setFormError("Pick a date for this session.");                            
+                                                                                
+      return;                                                                   
+                                                                                
+    }                                                                           
+                                                                                
+                                                                                
+                                                                                
+    setSubmitting(true);                                                        
+                                                                                
+    try {                                                                       
+                                                                                
+      const res = await fetch("/api/items", {                                   
+                                                                                
+        method: "POST",                                                         
+                                                                                
+        headers: { "Content-Type": "application/json" },                        
+                                                                                
+        body: JSON.stringify({                                                  
+                                                                                
+          subject: trimmedSubject,                                              
+                                                                                
+          durationMinutes: minutes,                                             
+                                                                                
+          studiedAt: form.studiedAt,                                            
+                                                                                
+        }),                                                                     
+                                                                                
+      });                                                                       
+                                                                                
+      if (res.status === 401) {                                                 
+                                                                                
+        router.replace("/login");                                               
+                                                                                
+        return;                                                                 
+                                                                                
+      }                                                                         
+                                                                                
+      const data = await res.json();                                            
+                                                                                
+      if (!res.ok) {                                                            
+                                                                                
+        setFormError(typeof data.error === "string" ? data.error : "Could not   
+save that session.");                                                           
+                                                                                
+        return;                                                                 
+                                                                                
+      }                                                                         
+                                                                                
+      setSessions((prev) => [data.session, ...prev]);                           
+                                                                                
+      setForm({ ...emptyForm, studiedAt: form.studiedAt });                     
+                                                                                
+    } catch {                                                                   
+                                                                                
+      setFormError("Something went wrong. Check your connection and try         
+again.");                                                                       
+                                                                                
+    } finally {                                                                 
+                                                                                
+      setSubmitting(false);                                                     
+                                                                                
+    }                                                                           
+                                                                                
+  }                                                                             
+                                                                                
+                                                                                
+                                                                                
+  async function handleDelete(id: string) {                                     
+                                                                                
+    setDeletingId(id);                                                          
+                                                                                
+    const previous = sessions;                                                  
+                                                                                
+    setSessions((prev) => prev.filter((s) => s.id !== id));                     
+                                                                                
+    try {                                                                       
+                                                                                
+      const res = await fetch(`/api/items?id=${encodeURIComponent(id)}`, {      
+method: "DELETE" });                                                            
+                                                                                
+      if (!res.ok) {                                                            
+                                                                                
+        setSessions(previous);                                                  
+                                                                                
+      }                                                                         
+                                                                                
+    } catch {                                                                   
+                                                                                
+      setSessions(previous);                                                    
+                                                                                
+    } finally {                                                                 
+                                                                                
+      setDeletingId(null);                                                      
+                                                                                
+    }                                                                           
+                                                                                
+  }                                                                             
+                                                                                
+                                                                                
+                                                                                
+  async function handleLogout() {                                               
+                                                                                
+    await fetch("/api/auth", { method: "DELETE" });                             
+                                                                                
+    router.replace("/login");                                                   
+                                                                                
+    router.refresh();                                                           
+                                                                                
+  }                                                                             
+                                                                                
+                                                                                
+                                                                                
+  return (                                                                      
+                                                                                
+    <div className="min-h-screen bg-zinc-50">                                   
+                                                                                
+      <header className="border-b border-zinc-200 bg-white">                    
+                                                                                
+        <div className="mx-auto flex max-w-5xl items-center justify-between px-6
+py-4">                                                                          
+                                                                                
+          <span className="text-lg font-semibold tracking-tight                 
+text-zinc-900">Recall</span>                                                    
+                                                                                
+          <div className="flex items-center gap-4">                             
+                                                                                
+            <span className="hidden text-sm text-zinc-500                       
+sm:inline">{email}</span>                                                       
+                                                                                
+            <button                                                             
+                                                                                
+              onClick={handleLogout}                                            
+                                                                                
+              className="rounded-lg border border-zinc-200 px-3 py-1.5 text-sm  
+font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50              
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600"                                               
+                                                                                
+            >                                                                   
+                                                                                
+              Log out                                                           
+                                                                                
+            </button>                                                           
+                                                                                
+          </div>                                                                
+                                                                                
+        </div>                                                                  
+                                                                                
+      </header>                                                                 
+                                                                                
+                                                                                
+                                                                                
+      <main className="mx-auto max-w-5xl px-6 py-10">                           
+                                                                                
+        <div className="space-y-1">                                             
+                                                                                
+          <h1 className="text-2xl font-semibold tracking-tight                  
+text-zinc-900">Your week at a glance</h1>                                       
+                                                                                
+          <p className="text-base leading-7 text-zinc-500">                     
+                                                                                
+            Log every session and watch your weekly total build.                
+                                                                                
+          </p>                                                                  
+                                                                                
+        </div>                                                                  
+                                                                                
+                                                                                
+                                                                                
+        <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-6 
+shadow-sm">                                                                     
+                                                                                
+          <div className="flex flex-wrap items-end justify-between gap-6">      
+                                                                                
+            <div>                                                               
+                                                                                
+              <p className="text-sm font-medium text-zinc-500">This week</p>    
+                                                                                
+              <p className="mt-1 text-3xl font-semibold tracking-tight          
+text-zinc-900">                                                                 
+                                                                                
+                {formatMinutes(weekStats.totalMinutes)}                         
+                                                                                
+              </p>                                                              
+                                                                                
+              <p className="mt-1 text-sm text-zinc-500">                        
+                                                                                
+                {weekStats.sessionCount} session{weekStats.sessionCount === 1 ? 
+"" : "s"} logged                                                                
+                                                                                
+              </p>                                                              
+                                                                                
+            </div>                                                              
+                                                                                
+            <div className="flex items-end gap-3">                              
+                                                                                
+              {weekStats.days.map((day) => (                                    
+                                                                                
+                <div key={day.iso} className="flex flex-col items-center gap-2">
+                                                                                
+                  <div className="flex h-20 w-6 items-end rounded-full          
+bg-zinc-100">                                                                   
+                                                                                
+                    <div                                                        
+                                                                                
+                      className="w-full rounded-full bg-indigo-600              
+transition-all duration-150"                                                    
+                                                                                
+                      style={{ height: `${Math.max(4, (day.minutes /            
+maxDayMinutes) * 100)}%` }}                                                     
+                                                                                
+                    />                                                          
+                                                                                
+                  </div>                                                        
+                                                                                
+                  <span className="text-xs font-medium                          
+text-zinc-400">{day.label}</span>                                               
+                                                                                
+                </div>                                                          
+                                                                                
+              ))}                                                               
+                                                                                
+            </div>                                                              
+                                                                                
+          </div>                                                                
+                                                                                
+        </section>                                                              
+                                                                                
+                                                                                
+                                                                                
+        <section className="mt-8 rounded-xl border border-zinc-200 bg-white p-6 
+shadow-sm">                                                                     
+                                                                                
+          <h2 className="text-lg font-semibold tracking-tight text-zinc-900">Log
+a session</h2>                                                                  
+                                                                                
+          <form onSubmit={handleSubmit} className="mt-4 grid gap-4              
+sm:grid-cols-[2fr_1fr_1fr_auto]">                                               
+                                                                                
+            <div>                                                               
+                                                                                
+              <label htmlFor="subject" className="mb-1.5 block text-sm          
+font-medium text-zinc-700">                                                     
+                                                                                
+                Subject                                                         
+                                                                                
+              </label>                                                          
+                                                                                
+              <input                                                            
+                                                                                
+                id="subject"                                                    
+                                                                                
+                type="text"                                                     
+                                                                                
+                value={form.subject}                                            
+                                                                                
+                onChange={(e) => setForm((f) => ({ ...f, subject: e.target.value
+}))}                                                                            
+                                                                                
+                placeholder="Organic Chemistry"                                 
+                                                                                
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2   
+text-sm text-zinc-900 transition duration-150 placeholder:text-zinc-400         
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600"                                               
+                                                                                
+              />                                                                
+                                                                                
+            </div>                                                              
+                                                                                
+            <div>                                                               
+                                                                                
+              <label htmlFor="duration" className="mb-1.5 block text-sm         
+font-medium text-zinc-700">                                                     
+                                                                                
+                Minutes                                                         
+                                                                                
+              </label>                                                          
+                                                                                
+              <input                                                            
+                                                                                
+                id="duration"                                                   
+                                                                                
+                type="number"                                                   
+                                                                                
+                min={1}                                                         
+                                                                                
+                max={1440}                                                      
+                                                                                
+                value={form.durationMinutes}                                    
+                                                                                
+                onChange={(e) => setForm((f) => ({ ...f, durationMinutes:       
+e.target.value }))}                                                             
+                                                                                
+                placeholder="45"                                                
+                                                                                
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2   
+text-sm text-zinc-900 transition duration-150 placeholder:text-zinc-400         
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600"                                               
+                                                                                
+              />                                                                
+                                                                                
+            </div>                                                              
+                                                                                
+            <div>                                                               
+                                                                                
+              <label htmlFor="studiedAt" className="mb-1.5 block text-sm        
+font-medium text-zinc-700">                                                     
+                                                                                
+                Date                                                            
+                                                                                
+              </label>                                                          
+                                                                                
+              <input                                                            
+                                                                                
+                id="studiedAt"                                                  
+                                                                                
+                type="date"                                                     
+                                                                                
+                value={form.studiedAt}                                          
+                                                                                
+                onChange={(e) => setForm((f) => ({ ...f, studiedAt:             
+e.target.value }))}                                                             
+                                                                                
+                className="w-full rounded-lg border border-zinc-200 px-3 py-2   
+text-sm text-zinc-900 transition duration-150 focus-visible:outline             
+focus-visible:outline-2 focus-visible:outline-offset-2                          
+focus-visible:outline-indigo-600"                                               
+                                                                                
+              />                                                                
+                                                                                
+            </div>                                                              
+                                                                                
+            <div className="flex items-end">                                    
+                                                                                
+              <button                                                           
+                                                                                
+                type="submit"                                                   
+                                                                                
+                disabled={submitting}                                           
+                                                                                
+                className="w-full rounded-lg bg-indigo-600 px-4 py-2 text-sm    
+font-semibold text-white transition duration-150 hover:bg-indigo-700            
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600 disabled:cursor-not-allowed                    
+disabled:opacity-60"                                                            
+                                                                                
+              >                                                                 
+                                                                                
+                {submitting ? "Saving…" : "Log session"}                        
+                                                                                
+              </button>                                                         
+                                                                                
+            </div>                                                              
+                                                                                
+          </form>                                                               
+                                                                                
+          {formError ? <p className="mt-3 text-sm text-red-600">{formError}</p> 
+: null}                                                                         
+                                                                                
+        </section>                                                              
+                                                                                
+                                                                                
+                                                                                
+        <section className="mt-8">                                              
+                                                                                
+          <h2 className="text-lg font-semibold tracking-tight                   
+text-zinc-900">Session history</h2>                                             
+                                                                                
+                                                                                
+                                                                                
+          {status === "loading" ? (                                             
+                                                                                
+            <div className="mt-4 space-y-3">                                    
+                                                                                
+              {[0, 1, 2].map((i) => (                                           
+                                                                                
+                <div key={i} className="h-16 animate-pulse rounded-xl border    
+border-zinc-200 bg-white" />                                                    
+                                                                                
+              ))}                                                               
+                                                                                
+            </div>                                                              
+                                                                                
+          ) : status === "error" ? (                                            
+                                                                                
+            <div className="mt-4 rounded-xl border border-zinc-200 bg-white p-6 
+text-center">                                                                   
+                                                                                
+              <p className="text-sm text-zinc-600">We couldn&apos;t load your   
+sessions.</p>                                                                   
+                                                                                
+              <button                                                           
+                                                                                
+                onClick={loadSessions}                                          
+                                                                                
+                className="mt-3 rounded-lg border border-zinc-200 px-3 py-1.5   
+text-sm font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50      
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600"                                               
+                                                                                
+              >                                                                 
+                                                                                
+                Try again                                                       
+                                                                                
+              </button>                                                         
+                                                                                
+            </div>                                                              
+                                                                                
+          ) : sessions.length === 0 ? (                                         
+                                                                                
+            <div className="mt-4 rounded-xl border border-dashed border-zinc-300
+bg-white p-10 text-center">                                                     
+                                                                                
+              <p className="text-base font-medium text-zinc-700">No sessions    
+yet</p>                                                                         
+                                                                                
+              <p className="mt-1 text-sm leading-6 text-zinc-500">              
+                                                                                
+                Log your first study session above and it will show up here.    
+                                                                                
+              </p>                                                              
+                                                                                
+            </div>                                                              
+                                                                                
+          ) : (                                                                 
+                                                                                
+            <ul className="mt-4 space-y-3">                                     
+                                                                                
+              {sessions.map((session) => (                                      
+                                                                                
+                <li                                                             
+                                                                                
+                  key={session.id}                                              
+                                                                                
+                  className="flex items-center justify-between gap-4 rounded-xl 
+border border-zinc-200 bg-white px-5 py-4 transition duration-150               
+hover:border-zinc-300"                                                          
+                                                                                
+                >                                                               
+                                                                                
+                  <div className="min-w-0">                                     
+                                                                                
+                    <p className="truncate text-sm font-semibold                
+text-zinc-900">{session.subject}</p>                                            
+                                                                                
+                    <p className="mt-0.5 text-sm text-zinc-500">                
+                                                                                
+                      {formatDay(session.studiedAt)} ·                          
+{formatMinutes(session.durationMinutes)}                                        
+                                                                                
+                    </p>                                                        
+                                                                                
+                  </div>                                                        
+                                                                                
+                  <button                                                       
+                                                                                
+                    onClick={() => handleDelete(session.id)}                    
+                                                                                
+                    disabled={deletingId === session.id}                        
+                                                                                
+                    className="shrink-0 rounded-lg px-3 py-1.5 text-sm          
+font-medium text-zinc-500 transition duration-150 hover:bg-red-50               
+hover:text-red-600 focus-visible:outline focus-visible:outline-2                
+focus-visible:outline-offset-2 focus-visible:outline-indigo-600                 
+disabled:opacity-50"                                                            
+                                                                                
+                  >                                                             
+                                                                                
+                    {deletingId === session.id ? "Removing…" : "Remove"}        
+                                                                                
+                  </button>                                                     
+                                                                                
+                </li>                                                           
+                                                                                
+              ))}                                                               
+                                                                                
+            </ul>                                                               
+                                                                                
+          )}                                                                    
+                                                                                
+        </section>                                                              
+                                                                                
+      </main>                                                                   
+                                                                                
+    </div>                                                                      
+                                                                                
+  );                                                                            
+                                                                                
+}                                                                               
+                                                                                
+
+a-study-tracker-saas-where-students-sign-im6pm/app/page.tsx                     
+
+                                                                                
+@@ -1,4 +1,18 @@                                                                
+-import Image from "next/image";                                                
++import Link from "next/link";                                                  
++import { redirect } from "next/navigation";                                    
++import { getCurrentUser } from "../lib/session";                               
+                                                                                
+-export default function Home() {                                               
++export default async function Home() {                                         
++  const user = await getCurrentUser();                                         
++  if (user) {                                                                  
++    redirect("/dashboard");                                                    
++  }                                                                            
++                                                                               
+   return (                                                                     
++    <div className="min-h-screen bg-white">                                    
++      <header className="border-b border-zinc-200">                            
++        <div className="mx-auto flex max-w-5xl items-center justify-between    
+px-6 py-5">                                                                     
+-        <Image                                                                 
+-          className="dark:invert"                                              
+-          src="/next.svg"                                                      
+-          alt="Next.js logo"                                                   
+-          width={100}                                                          
+-          height={20}                                                          
+-          priority                                                             
+-        />                                                                     
+-        <div className="flex flex-col items-center gap-6 text-center           
+sm:items-start sm:text-left">                                                   
+-          <h1 className="max-w-xs text-3xl font-semibold leading-10            
+tracking-tight text-black dark:text-zinc-50">                                   
+-            To get started, edit the page.tsx file.                            
+-          </h1>                                                                
+-          <p className="max-w-md text-lg leading-8 text-zinc-600               
+dark:text-zinc-400">                                                            
+-            Looking for a starting point or more instructions? Head over to{"  
+"}                                                                              
+-            <a                                                                 
+-                                                                               
+href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&
+utm_medium=appdir-template-tw&utm_campaign=create-next-app"                     
+-              className="font-medium text-zinc-950 dark:text-zinc-50"          
+-            >                                                                  
+-              Templates                                                        
+-            </a>{" "}                                                          
+-            or the{" "}                                                        
+-            <a                                                                 
+-                                                                               
+href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-temp
+late-tw&utm_campaign=create-next-app"                                           
+-              className="font-medium text-zinc-950 dark:text-zinc-50"          
+-            >                                                                  
+-              Learning                                                         
+-            </a>{" "}                                                          
+-            center.                                                            
+-          </p>                                                                 
++    <div className="min-h-screen bg-white">                                    
++      <header className="border-b border-zinc-200">                            
++        <div className="mx-auto flex max-w-5xl items-center justify-between    
+px-6 py-5">                                                                     
++          <span className="text-lg font-semibold tracking-tight                
+text-zinc-900">Recall</span>                                                    
++          <Link                                                                
++            href="/login"                                                      
++            className="rounded-lg border border-zinc-200 px-4 py-2 text-sm     
+font-medium text-zinc-700 transition duration-150 hover:bg-zinc-50              
+focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2    
+focus-visible:outline-indigo-600"                                               
++          >                                                                    
++            Log in                                                             
++          </Link>                                                              
+         </div>                                                                 
++      </header>                                                                
++                                                                               
++      <main className="mx-auto max-w-3xl px-6 py-24 text-center sm:py-32">     
++        <h1 className="text-4xl font-semibold tracking-tight text-zinc-900     
+sm:text-5xl">                                                                   
++          See your study habits, one week at a time.                           
+href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-templa
+te-tw&utm_campaign=create-next-app"                                             
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
++      </header>                                                                
++                                                                               
++      <main className="mx-auto max-w-3xl px-6 py-24 text-center sm:py-32">     
++        <h1 className="text-4xl font-semibold tracking-tight text-zinc-900     
+sm:text-5xl">                                                                   
++          See your study habits, one week at a time.                           
++        </h1>                                                                  
++        <p className="mx-auto mt-6 max-w-xl text-lg leading-8 text-zinc-500">  
++          Log every study session in seconds. Recall turns them into a clear   
+weekly picture, so you                                                          
++          always know where your time went.                                    
++        </p>                                                                   
++        <div className="mt-10 flex items-center justify-center gap-4">         
++          <Link                                                                
++            href="/login"                                                      
++            className="rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold
+text-white transition duration-150 hover:bg-indigo-700 focus-visible:outline    
+focus-visible:outline-2 focus-visible:outline-offset-2                          
+focus-visible:outline-indigo-600"                                               
+           >                                                                    
+-            <Image                                                             
+-              className="dark:invert"                                          
+-              src="/vercel.svg"                                                
+-              alt="Vercel logomark"                                            
+-              width={16}                                                       
+-              height={16}                                                      
+-            />                                                                 
+-            Deploy Now                                                         
+-          </a>                                                                 
+-          <a                                                                   
+-            className="flex h-12 w-full items-center justify-center            
+rounded-full border border-solid border-black/[.08] px-5 transition-colors      
+hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145]          
+dark:hover:bg-[#1a1a1a] md:w-[158px]"                                           
+-                                                                               
+href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-templ
+ate-tw&utm_campaign=create-next-app"                                            
+-            target="_blank"                                                    
+-            rel="noopener noreferrer"                                          
+-          >                                                                    
+-            Documentation                                                      
+-          </a>                                                                 
++            Get started                                                        
++          </Link>                                                              
+         </div>                                                                 
++                                                                               
++        <dl className="mt-20 grid grid-cols-1 gap-8 border-t border-zinc-200   
+pt-12 text-left sm:grid-cols-3">                                                
++          <div>                                                                
++            <dt className="text-sm font-semibold text-zinc-900">Log in         
+seconds</dt>                                                                    
++            <dd className="mt-2 text-sm leading-6 text-zinc-500">              
++              Subject, duration, date. No timers to start or stop.             
++            </dd>                                                              
++          </div>                                                               
++          <div>                                                                
++            <dt className="text-sm font-semibold text-zinc-900">Weekly         
+view</dt>                                                                       
++            <dd className="mt-2 text-sm leading-6 text-zinc-500">              
++              A simple daily breakdown of exactly how much you studied.        
++            </dd>                                                              
++          </div>                                                               
++          <div>                                                                
++            <dt className="text-sm font-semibold text-zinc-900">Just yours</dt>
++            <dd className="mt-2 text-sm leading-6 text-zinc-500">              
++              Every account only ever sees its own sessions.                   
++            </dd>                                                              
++          </div>                                                               
++        </dl>                                                                  
+       </main>                                                                  
+     </div>                                                                     
+   );                                                                           
+ }                                                                              
+                                                                                
+
+Tokens: 2.6k sent, 10.0k received. Cost: $0.11 message, $0.11 session.
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/config.ts
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/types.ts
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/user-store.ts
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/auth-cookie.ts
+
+a-study-tracker-saas-where-students-sign-im6pm/lib/session.ts
+Committing a-study-tracker-saas-where-students-sign-im6pm/app/api/auth/route.ts 
+before applying edits.
+Committing a-study-tracker-saas-where-students-sign-im6pm/app/api/items/route.ts
+before applying edits.
+Committing a-study-tracker-saas-where-students-sign-im6pm/app/login/page.tsx 
+before applying edits.
+Committing a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/page.tsx
+before applying edits.
+
+a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/dashboard-client.ts
+x
+Committing a-study-tracker-saas-where-students-sign-im6pm/app/page.tsx before 
+applying edits.
+Commit d8f6f5b feat: scaffold study tracker SaaS app with auth and dashboard
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/dashboard-client.ts
+x
+Applied edit to a-study-tracker-saas-where-students-sign-im6pm/lib/types.ts
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/lib/auth-cookie.ts
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/app/login/page.tsx
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/app/dashboard/page.tsx
+Applied edit to a-study-tracker-saas-where-students-sign-im6pm/lib/config.ts
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/app/api/items/route.ts
+Applied edit to a-study-tracker-saas-where-students-sign-im6pm/app/page.tsx
+Applied edit to 
+a-study-tracker-saas-where-students-sign-im6pm/app/api/auth/route.ts
+Applied edit to a-study-tracker-saas-where-students-sign-im6pm/lib/session.ts
+Applied edit to a-study-tracker-saas-where-students-sign-im6pm/lib/user-store.ts
+Commit 1503ad5 feat: build study-tracker SaaS with auth, per-user sessions, 
+dashboard
+Summarization failed for model anthropic/claude-sonnet-5: cannot schedule new futures after shutdown
+Summarization failed for model anthropic/claude-sonnet-5: cannot schedule new futures after shutdown
+summarizer unexpectedly failed for all models
